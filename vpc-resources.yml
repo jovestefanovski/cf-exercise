@@ -3,6 +3,11 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: This is the VPC infrastructure for hosting ticketing system.
 
 Parameters:
+  Prefix:
+    Description: Environment where the stack will be deployed
+    Type: String
+    Default: ticketing
+
   Environment:
     Description: Environment where the stack will be deployed
     Type: String
@@ -18,14 +23,14 @@ Resources:
       EnableDnsSupport: 'true'
       Tags: 
         - Key: Name
-          Value: !Ref Environment
+          Value: !Sub ${Prefix}-${Environment}-VPC
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
-          Value: !Ref Environment
+          Value: !Sub ${Prefix}-${Environment}-IGW
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -42,7 +47,7 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub ${Environment} Public Subnet (AZ1)
+          Value: !Sub ${Prefix}-${Environment} Public Subnet (AZ1)
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
@@ -53,7 +58,7 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub ${Environment} Public Subnet (AZ2)
+          Value: !Sub ${Prefix}-${Environment} Public Subnet (AZ2)
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -64,7 +69,7 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: !Sub ${Environment} Private Subnet (AZ1)
+          Value: !Sub ${Prefix}-${Environment} Private Subnet (AZ1)
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
@@ -75,7 +80,7 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: !Sub ${Environment} Private Subnet (AZ2)
+          Value: !Sub ${Prefix}-${Environment} Private Subnet (AZ2)
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -83,7 +88,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub ${Environment}-Public-rt
+          Value: !Sub ${Prefix}-${Environment}-Public-rt
 
   InternetAccessRoute:
       Type: AWS::EC2::Route
@@ -105,7 +110,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub ${Environment}-Public-rt-(AZ2)
+          Value: !Sub ${Prefix}-${Environment}-Public-rt-(AZ2)
 
   InternetAccessRouteTable2:
       Type: AWS::EC2::Route
@@ -127,7 +132,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub ${Environment} Private Routes (AZ1)
+          Value: !Sub ${Prefix}-${Environment} Private Routes (AZ1)
 
   PrivateSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -141,7 +146,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub ${Environment} Private Routes (AZ2)
+          Value: !Sub ${Prefix}-${Environment} Private Routes (AZ2)
 
   PrivateSubnet2RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -149,7 +154,42 @@ Resources:
       RouteTableId: !Ref PrivateRouteTable2
       SubnetId: !Ref PrivateSubnet2
 
-# TO DO: Add nat gateway for the private subnet and host it in the public sub and add routes to it from the priv sub.
+  NAT:
+    Type: AWS::EC2::NatGateway
+    Properties:
+        AllocationId:
+          Fn::GetAtt:
+          - EIP
+          - AllocationId
+        SubnetId:
+          Ref: PublicSubnet1
+        Tags:
+        - Key: stack
+          Value: !Sub ${Prefix}-${Environment}-NAT-Gateway
+          
+  EIP:
+    DependsOn: InternetGatewayAttachment
+    Type: AWS::EC2::EIP
+    Properties:
+        Domain: vpc
+
+  NATRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+        RouteTableId:
+          Ref: PrivateRouteTable1
+        DestinationCidrBlock: 0.0.0.0/0
+        NatGatewayId:
+          Ref: NAT
+
+  NATRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+        RouteTableId:
+          Ref: PrivateRouteTable2
+        DestinationCidrBlock: 0.0.0.0/0
+        NatGatewayId:
+          Ref: NAT
 
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -253,10 +293,24 @@ Resources:
           - DatabaseSecurityGroup
           - GroupId
 
+  myDBSubnetGroup:
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties: 
+      DBSubnetGroupDescription: description
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags: 
+        - 
+          Key: String
+          Value: String
+
 Outputs:
   VPC:
     Description: A reference to the created VPC
     Value: !Ref VPC
+    Export:
+      Name: infrastructure-VPC
 
   PublicSubnets:
     Description: A list of the public subnets
@@ -265,3 +319,25 @@ Outputs:
   PrivateSubnets:
     Description: A list of the private subnets
     Value: !Join [ ",", [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ]]
+
+  InstanceSG:
+    Description: Instance security group
+    Value: !Ref InstanceSecurityGroup
+
+  LoadBalancerSG:
+    Description: Load balancer security group
+    Value: !Ref LoadBalancerSecurityGroup
+    Export:
+      Name: loadbalancer-sg
+
+  DatabaseSG:
+    Description: RDS security group
+    Value: !Ref DatabaseSecurityGroup
+    Export: 
+      Name: database-sg
+    
+  SubnetGroup:
+    Description: Subnet group for RDS
+    Value: !Ref myDBSubnetGroup
+    Export:
+      Name: rds-subnet-group

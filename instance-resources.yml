@@ -1,0 +1,115 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: In this stack we define all EC2 resources.
+
+Parameters:
+  Prefix:
+    Description: Environment where the stack will be deployed
+    Type: String
+    Default: ticketing
+
+  Environment:
+    Description: Environment where the stack will be deployed
+    Type: String
+    Default: development
+
+Resources:
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref InstanceRole]
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Prefix}-${Environment}-osticket-ssm
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              Effect: Allow
+              Action:
+              - ssm:*
+              - logs:*
+              - ec2messages:*
+              - ssmmessages:CreateControlChannel
+              - ssmmessages:CreateDataChannel
+              - ssmmessages:OpenControlChannel
+              - ssmmessages:OpenDataChannel
+              - ec2:DescribeInstanceStatus
+              Resource: '*'
+
+  MyLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${Prefix}-${Environment}-launch-template
+      LaunchTemplateData:
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        DisableApiTermination: true
+        ImageId: ami-015c25ad8763b2f11
+        InstanceType: t2.micro
+        KeyName: !Sub ${Prefix}-${Environment}.pem
+        SecurityGroupIds: 
+          Fn::Split:
+          - ','
+          - Fn::ImportValue: LoadBalancerSecurityGroup
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      IpAddressType: ipv4
+      Name: !Sub ${Prefix}-${Environment}-ApplicationLoadBalancer
+      Scheme: internet-facing
+      SecurityGroups: 
+        Fn::Split: 
+        - ','
+        - Fn::ImportValue: LoadBalancerSecurityGroup
+      Subnets:
+        Fn::Split: 
+        - ','
+        - Fn::ImportValue: PublicSubnets
+      Tags: 
+        - Key: Name
+          Value: !Sub ${Prefix}-${Environment}-loadbalancer
+      Type: application
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ApplicationTargetGroup
+  
+  ApplicationTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      Name: !Sub ${Prefix}-${Environment}-ApplicationTargetGroup
+      VpcId: 
+        Fn::ImportValue: infrastructure-VPC
+      Port: 80
+      Protocol: HTTP
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '20'
+      Targets:
+        - Id: !Ref MyLaunchTemplate
+          Port: 80
