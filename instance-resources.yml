@@ -13,6 +13,11 @@ Parameters:
     Type: String
     Default: development
 
+  Image:
+    Description: Environment where the stack will be deployed
+    Type: AWS::EC2::Image::Id
+    Default: ami-03bac951c13aac11f
+
 Resources:
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -54,29 +59,33 @@ Resources:
       LaunchTemplateData:
         IamInstanceProfile:
           Arn: !GetAtt InstanceProfile.Arn
-        DisableApiTermination: true
-        ImageId: ami-015c25ad8763b2f11
+        ImageId: !Ref Image
         InstanceType: t2.micro
-        KeyName: !Sub ${Prefix}-${Environment}.pem
+        KeyName: !Sub ${Prefix}-${Environment}
         SecurityGroupIds: 
           Fn::Split:
           - ','
-          - Fn::ImportValue: LoadBalancerSecurityGroup
+          - Fn::ImportValue: loadbalancer-sg
+        TagSpecifications:
+          - ResourceType: instance
+            Tags: 
+              - Key: Name
+                Value: !Sub ${Prefix}-${Environment}-instance
 
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties: 
       IpAddressType: ipv4
-      Name: !Sub ${Prefix}-${Environment}-ApplicationLoadBalancer
+      Name: !Sub ${Prefix}-${Environment}-AppLB
       Scheme: internet-facing
       SecurityGroups: 
         Fn::Split: 
         - ','
-        - Fn::ImportValue: LoadBalancerSecurityGroup
+        - Fn::ImportValue: loadbalancer-sg
       Subnets:
         Fn::Split: 
         - ','
-        - Fn::ImportValue: PublicSubnets
+        - Fn::ImportValue: pub-subnets
       Tags: 
         - Key: Name
           Value: !Sub ${Prefix}-${Environment}-loadbalancer
@@ -90,7 +99,10 @@ Resources:
       Protocol: HTTP
       DefaultActions:
         - Type: forward
-          TargetGroupArn: !Ref ApplicationTargetGroup
+          ForwardConfig:
+            TargetGroups:
+              - TargetGroupArn: !Ref ApplicationTargetGroup
+                Weight: 1
   
   ApplicationTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -98,18 +110,87 @@ Resources:
       HealthCheckIntervalSeconds: 30
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 15
+      HealthCheckPath: /
       HealthyThresholdCount: 5
       UnhealthyThresholdCount: 3
       Matcher:
-        HttpCode: '200'
-      Name: !Sub ${Prefix}-${Environment}-ApplicationTargetGroup
+        HttpCode: 200-299
+      Name: !Sub ${Prefix}-${Environment}-AppTGroup
       VpcId: 
         Fn::ImportValue: infrastructure-VPC
       Port: 80
       Protocol: HTTP
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
-          Value: '20'
-      Targets:
-        - Id: !Ref MyLaunchTemplate
-          Port: 80
+          Value: 30
+
+  InstanceASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref MyLaunchTemplate
+        Version: !GetAtt MyLaunchTemplate.LatestVersionNumber
+      MaxSize: 4
+      MinSize: 1
+      DesiredCapacity: 1
+      VPCZoneIdentifier:
+        Fn::Split:
+          - ','
+          - Fn::ImportValue: priv-subnets
+      TargetGroupARNs: [!Ref ApplicationTargetGroup]
+
+  ASGScalingPolicyHigh:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref InstanceASG
+      PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      StepAdjustments: 
+        - MetricIntervalLowerBound: 0
+          ScalingAdjustment: 1
+
+  ASGScalingPolicyLow:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref InstanceASG
+      Cooldown: 60
+      ScalingAdjustment: -1
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: 2
+      Statistic: Average
+      Threshold: 80
+      AlarmDescription: 'Scale out if CPU > 80% for 2 minutes'
+      Period: 60
+      AlarmActions:
+      - !Ref ASGScalingPolicyHigh
+      Namespace: AWS/EC2
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value: !Ref InstanceASG
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-down if CPU < 60% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 70
+      AlarmActions:
+        - !Ref ASGScalingPolicyLow
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref InstanceASG
+      ComparisonOperator: LessThanThreshold
+
+Outputs:
+  ELBName:
+    Value: !GetAtt LoadBalancer.DNSName

@@ -220,6 +220,7 @@ Resources:
     Properties:
       GroupDescription: Allow http and session manager to client host
       VpcId: !Ref VPC
+
   OutboundRuleInstance:
     Type: AWS::EC2::SecurityGroupEgress
     Properties:
@@ -234,6 +235,7 @@ Resources:
         Fn::GetAtt:
           - LoadBalancerSecurityGroup
           - GroupId
+
   InboundRuleInstance:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
@@ -264,6 +266,7 @@ Resources:
     Properties:
       GroupDescription: Allow database port
       VpcId: !Ref VPC
+
   OutboundRuleDatabase:
     Type: AWS::EC2::SecurityGroupEgress
     Properties:
@@ -278,6 +281,7 @@ Resources:
         Fn::GetAtt:
           - InstanceSecurityGroup
           - GroupId
+
   InboundRuleDatabase:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
@@ -315,10 +319,14 @@ Outputs:
   PublicSubnets:
     Description: A list of the public subnets
     Value: !Join [ ",", [ !Ref PublicSubnet1, !Ref PublicSubnet2 ]]
+    Export:
+      Name: pub-subnets
 
   PrivateSubnets:
     Description: A list of the private subnets
     Value: !Join [ ",", [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ]]
+    Export:
+      Name: priv-subnets
 
   InstanceSG:
     Description: Instance security group
